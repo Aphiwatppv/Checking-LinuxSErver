@@ -1,0 +1,65 @@
+using BKGEBSInvestigation.InvestigationServicesUserController;
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data;
+using System.DirectoryServices.ActiveDirectory;
+using System.Drawing;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+
+namespace BKGEBSInvestigation.WTForm
+{
+    public partial class InvestigationLinuxEBSoForm : Form
+    {
+        private readonly string _lotid = string.Empty;
+
+        private IEngineInvestigateLinuxServer _engineInvestigateLinuxServer = new EngineInvestigateLinuxServer();
+
+        public InvestigationLinuxEBSoForm(string lotid)
+        {
+            _lotid = lotid;
+            InitializeComponent();
+        }
+
+        private void SetupDgVPath()
+        {
+            dgvPaths.Columns.Add("Paths");
+
+            dgvPaths.Rows.Add("/srv/ebsdba/ebsdba/data/loader/STDF/");
+            dgvPaths.Rows.Add("/srv/ebsdba/ebsdba/data/converters/TRIGGER/");
+            dgvPaths.Rows.Add("/srv/ebsdba/ebsdba/dd/data/el_done/");
+            dgvPaths.Rows.Add("/srv/ebsdba/ebsdba/dd/log/");
+
+        }
+
+
+
+        private void dgvPaths_CellContentClick(object sender, DataGridViewCellEventArgs e)
+        {
+            if (e.RowIndex == 0)
+            {
+                var path =  dgvPaths.Rows[e.RowIndex].Cells[0].Value.ToString();
+
+                List<FileEntry> result =  _engineInvestigateLinuxServer.CheckFiles(_lotid, path);
+
+                textBoxResult.Text = result;
+
+
+            }
+        }
+
+
+        public sealed class FileEntry
+        {
+            public string Name { get; init; } = "";
+            public string Path { get; init; } = "";
+            public bool IsDir { get; init; }
+            public long Size { get; init; }
+            public DateTime? MTime { get; init; }
+            public string? Mode { get; init; }
+        }
+    }
+}
