@@ -1,0 +1,159 @@
+using BKGEBSInvestigation.InvestigationServicesUserController;
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Linq;
+using System.Windows.Forms;
+
+namespace BKGEBSInvestigation.WTForm
+{
+    public partial class InvestigationLinuxEBSoForm : Form
+    {
+        private readonly string _lotid;
+        private readonly IEngineInvestigateLinuxServer _engineInvestigateLinuxServer;
+
+        private DataGridView dgvPaths;
+        private RichTextBox txtResult;
+
+        public InvestigationLinuxEBSoForm(string lotid)
+        {
+            _lotid = lotid;
+            _engineInvestigateLinuxServer = new EngineInvestigateLinuxServer();
+
+            InitializeComponent();
+            InitializeLayout();
+            SetupDgVPath();
+        }
+
+        private void InitializeLayout()
+        {
+            Text = $"Linux Investigation for LOT: {_lotid}";
+            Width = 1000;
+            Height = 650;
+            BackColor = Color.White;
+
+            var split = new SplitContainer
+            {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Vertical,
+                SplitterDistance = 350,
+                FixedPanel = FixedPanel.Panel1
+            };
+
+            // ---------- LEFT SIDE: DataGridView ----------
+            dgvPaths = new DataGridView
+            {
+                Dock = DockStyle.Fill,
+                ReadOnly = true,
+                AllowUserToAddRows = false,
+                AllowUserToDeleteRows = false,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                AutoGenerateColumns = false,
+                RowHeadersVisible = false,
+                BackgroundColor = Color.White,
+                BorderStyle = BorderStyle.None
+            };
+
+            dgvPaths.EnableHeadersVisualStyles = false;
+            dgvPaths.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(47, 47, 47);
+            dgvPaths.ColumnHeadersDefaultCellStyle.ForeColor = Color.White;
+            dgvPaths.DefaultCellStyle.BackColor = Color.White;
+            dgvPaths.DefaultCellStyle.ForeColor = Color.Black;
+            dgvPaths.DefaultCellStyle.SelectionBackColor = Color.FromArgb(230, 230, 230);
+            dgvPaths.DefaultCellStyle.SelectionForeColor = Color.Black;
+
+            dgvPaths.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Name = "Paths",
+                HeaderText = "Linux Directory Paths",
+                AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill
+            });
+
+            dgvPaths.CellDoubleClick += DgvPaths_CellDoubleClick;
+            dgvPaths.CellContentClick += DgvPaths_CellContentClick;
+
+            split.Panel1.Controls.Add(dgvPaths);
+
+            // ---------- RIGHT SIDE: TextBox (cmd style) ----------
+            txtResult = new RichTextBox
+            {
+                Dock = DockStyle.Fill,
+                ReadOnly = true,
+                BorderStyle = BorderStyle.None,
+                BackColor = Color.Black,
+                ForeColor = Color.White,
+                Font = new Font("Consolas", 10.5f, FontStyle.Regular),
+                WordWrap = false,
+                ScrollBars = RichTextBoxScrollBars.Both
+            };
+
+            split.Panel2.Controls.Add(txtResult);
+
+            Controls.Add(split);
+        }
+
+        private void SetupDgVPath()
+        {
+            dgvPaths.Rows.Clear();
+            dgvPaths.Rows.Add("/srv/ebsdba/ebsdba/data/loader/STDF/");
+            dgvPaths.Rows.Add("/srv/ebsdba/ebsdba/data/converters/TRIGGER/");
+            dgvPaths.Rows.Add("/srv/ebsdba/ebsdba/dd/data/el_done/");
+            dgvPaths.Rows.Add("/srv/ebsdba/ebsdba/dd/log/");
+        }
+
+        private void DgvPaths_CellContentClick(object sender, DataGridViewCellEventArgs e)
+        {
+            if (e.RowIndex < 0) return;
+            LoadPathFiles(e.RowIndex);
+        }
+
+        private void DgvPaths_CellDoubleClick(object sender, DataGridViewCellEventArgs e)
+        {
+            if (e.RowIndex < 0) return;
+            LoadPathFiles(e.RowIndex);
+        }
+
+        private void LoadPathFiles(int rowIndex)
+        {
+            try
+            {
+                var path = dgvPaths.Rows[rowIndex].Cells[0].Value?.ToString();
+                if (string.IsNullOrEmpty(path)) return;
+
+                txtResult.Clear();
+                txtResult.AppendText($"Checking path: {path}\n");
+
+                List<FileEntry> result = _engineInvestigateLinuxServer.CheckFiles(_lotid, path);
+
+                if (result == null || result.Count == 0)
+                {
+                    txtResult.AppendText("\nNo files found.\n");
+                    return;
+                }
+
+                foreach (var file in result)
+                {
+                    string type = file.IsDir ? "<DIR>" : "FILE";
+                    txtResult.AppendText(
+                        $"{file.MTime:yyyy-MM-dd HH:mm:ss}  {type,-6}  {file.Size,8} bytes  {file.Name}\n"
+                    );
+                }
+            }
+            catch (Exception ex)
+            {
+                txtResult.AppendText($"\nError: {ex.Message}");
+            }
+        }
+
+        // Example file model
+        public sealed class FileEntry
+        {
+            public string Name { get; init; } = "";
+            public string Path { get; init; } = "";
+            public bool IsDir { get; init; }
+            public long Size { get; init; }
+            public DateTime? MTime { get; init; }
+            public string? Mode { get; init; }
+        }
+    }
+}
