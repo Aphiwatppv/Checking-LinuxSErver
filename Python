@@ -1,0 +1,34 @@
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+def correlation_and_pairplot(dataframe: pd.DataFrame):
+    """
+    Calculate correlation between numeric columns and 
+    return both the correlation matrix and a Seaborn pairplot.
+
+    Parameters
+    ----------
+    dataframe : pd.DataFrame
+        Input data table containing numeric columns.
+
+    Returns
+    -------
+    corr_matrix : pd.DataFrame
+        Correlation matrix of numeric columns.
+    pair_plot : sns.axisgrid.PairGrid
+        Seaborn pairplot object for visual inspection.
+    """
+    # Ensure only numeric columns are used
+    numeric_df = dataframe.select_dtypes(include=['number'])
+    
+    # Calculate correlation matrix
+    corr_matrix = numeric_df.corr()
+    print("Correlation Matrix:\n", corr_matrix)
+    
+    # Generate pairplot
+    sns.set(style="whitegrid", context="notebook")
+    pair_plot = sns.pairplot(numeric_df, diag_kind="kde", corner=True)
+    plt.show()
+    
+    return corr_matrix, pair_plot
