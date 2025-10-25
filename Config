@@ -1,1 +1,351 @@
+using System;
+using System.Collections.Generic;
+using System.Xml.Serialization;
+
+namespace Config
+{
+    [XmlRoot("ConfigModels")]
+    public sealed class ConfigModels
+    {
+        [XmlElement("Site")]
+        public List	ConfigModel> Sites { get; set; } = new List<ConfigModel>();
+    }
+
+    public sealed class ConfigModel
+    {
+        [XmlAttribute("Name")]
+        public string Site { get; set; } = "BKG";
+
+        [XmlArray("SshServers")]
+        [XmlArrayItem("Ssh")]
+        public List<SshServerInfo> SshServers { get; set; } = new List<SshServerInfo>();
+
+        [XmlArray("SqlConnections")]
+        [XmlArrayItem("Sql")]
+        public List<SqlConnectionInfo> SqlConnections { get; set; } = new List<SqlConnectionInfo>();
+    }
+
+    public sealed class SshServerInfo
+    {
+        [XmlAttribute("Name")]
+        public string Name { get; set; } = "SSH1";
+
+        [XmlElement("Hostname")]
+        public string Hostname { get; set; } = "127.0.0.1";
+
+        [XmlElement("Port")]
+        public int Port { get; set; } = 22;
+    }
+
+    public sealed class SqlConnectionInfo
+    {
+        [XmlAttribute("Name")]
+        public string ConnectionName { get; set; } = "SQL1";
+
+        [XmlElement("TNS")]
+        public string TNS { get; set; } = "";
+
+        [XmlElement("Username")]
+        public string Username { get; set; } = "";
+
+        [XmlElement("Password")]
+        public string Password { get; set; } = "";
+    }
+}
+
+
+using System;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Xml.Serialization;
+
+namespace Config
+{
+    /// <summary>
+    /// Handles loading, accessing, modifying, and saving the config.xml.
+    /// Safe for WinForms / services.
+    /// </summary>
+    public sealed class ConfigManager
+    {
+        private readonly string _configPath;
+        private readonly object _lockObj = new object();
+        private ConfigModels _config; // in-memory cache
+        private readonly XmlSerializer _serializer = new XmlSerializer(typeof(ConfigModels));
+
+        public ConfigManager(string configPath)
+        {
+            if (string.IsNullOrWhiteSpace(configPath))
+                throw new ArgumentException("configPath is required.", nameof(configPath));
+
+            _configPath = configPath;
+        }
+
+        /// <summary>
+        /// Get the whole config tree in memory. Lazily loads from disk.
+        /// Never returns null.
+        /// </summary>
+        public ConfigModels GetAll()
+        {
+            EnsureLoaded();
+            return _config;
+        }
+
+        /// <summary>
+        /// Get config for a specific site (e.g. "BKG"). Returns null if not found.
+        /// </summary>
+        public ConfigModel GetSite(string siteName)
+        {
+            if (string.IsNullOrWhiteSpace(siteName))
+                return null;
+
+            EnsureLoaded();
+            return _config.Sites
+                          .FirstOrDefault(s => string.Equals(s.Site,
+                                                             siteName,
+                                                             StringComparison.OrdinalIgnoreCase));
+        }
+
+        /// <summary>
+        /// Add new site config or replace existing one with the same Site name.
+        /// Then remember to call Save().
+        /// </summary>
+        public void UpsertSite(ConfigModel siteConfig)
+        {
+            if (siteConfig == null)
+                throw new ArgumentNullException(nameof(siteConfig));
+
+            EnsureLoaded();
+
+            lock (_lockObj)
+            {
+                var existing = _config.Sites
+                    .FirstOrDefault(s => string.Equals(s.Site,
+                                                       siteConfig.Site,
+                                                       StringComparison.OrdinalIgnoreCase));
+
+                if (existing == null)
+                {
+                    _config.Sites.Add(siteConfig);
+                }
+                else
+                {
+                    // replace
+                    int idx = _config.Sites.IndexOf(existing);
+                    _config.Sites[idx] = siteConfig;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Remove a site by name. Returns true if removed.
+        /// Then call Save() if you want disk update.
+        /// </summary>
+        public bool RemoveSite(string siteName)
+        {
+            EnsureLoaded();
+
+            lock (_lockObj)
+            {
+                var target = _config.Sites
+                    .FirstOrDefault(s => string.Equals(s.Site,
+                                                       siteName,
+                                                       StringComparison.OrdinalIgnoreCase));
+                if (target != null)
+                {
+                    _config.Sites.Remove(target);
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Force reload from disk, discarding unsaved in-memory changes.
+        /// </summary>
+        public void Reload()
+        {
+            lock (_lockObj)
+            {
+                _config = LoadFromDisk(_configPath, _serializer);
+            }
+        }
+
+        /// <summary>
+        /// Save current in-memory config back to disk.
+        /// Creates directory if missing.
+        /// Creates timestamped .bak before overwrite.
+        /// Validates before save.
+        /// </summary>
+        public void Save()
+        {
+            EnsureLoaded();
+
+            lock (_lockObj)
+            {
+                // validation hook (throws if invalid)
+                ValidateOrThrow(_config);
+
+                // ensure dir
+                var dir = Path.GetDirectoryName(_configPath);
+                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                {
+                    Directory.CreateDirectory(dir);
+                }
+
+                // backup if file exists
+                if (File.Exists(_configPath))
+                {
+                    string ts = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                    string backupPath = _configPath + "." + ts + ".bak";
+                    File.Copy(_configPath, backupPath, overwrite: true);
+                }
+
+                // write pretty XML
+                using (var fs = new FileStream(_configPath, FileMode.Create, FileAccess.Write, FileShare.None))
+                using (var writer = new StreamWriter(fs, Encoding.UTF8))
+                {
+                    _serializer.Serialize(writer, _config);
+                }
+            }
+        }
+
+        // -----------------------
+        // internals
+        // -----------------------
+
+        private void EnsureLoaded()
+        {
+            if (_config != null)
+                return;
+
+            lock (_lockObj)
+            {
+                if (_config == null)
+                {
+                    _config = LoadFromDisk(_configPath, _serializer);
+                }
+            }
+        }
+
+        private static ConfigModels LoadFromDisk(string path, XmlSerializer serializer)
+        {
+            try
+            {
+                if (!File.Exists(path))
+                {
+                    // create default structure if no file yet
+                    return CreateDefault();
+                }
+
+                using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+                using (var reader = new StreamReader(fs, Encoding.UTF8))
+                {
+                    var data = serializer.Deserialize(reader) as ConfigModels;
+                    if (data == null)
+                        return CreateDefault();
+
+                    return data;
+                }
+            }
+            catch (Exception ex)
+            {
+                // If corrupted, fallback to default instead of crashing app.
+                // You can hook your LogSystem here.
+                Console.WriteLine("Config load error: " + ex.Message);
+                return CreateDefault();
+            }
+        }
+
+        /// <summary>
+        /// Create a safe default config if file missing or broken.
+        /// </summary>
+        private static ConfigModels CreateDefault()
+        {
+            var def = new ConfigModels();
+
+            var defaultSite = new ConfigModel
+            {
+                Site = "BKG",
+                SshServers =
+                {
+                    new SshServerInfo
+                    {
+                        Name = "SSH1",
+                        Hostname = "127.0.0.1",
+                        Port = 22
+                    }
+                },
+                SqlConnections =
+                {
+                    new SqlConnectionInfo
+                    {
+                        ConnectionName = "SQL1",
+                        TNS = "YOUR_TNS_HERE",
+                        Username = "USER",
+                        Password = "PASS"
+                    }
+                }
+            };
+
+            def.Sites.Add(defaultSite);
+            return def;
+        }
+
+        /// <summary>
+        /// Central place to enforce required fields.
+        /// Throw = block save.
+        /// </summary>
+        private static void ValidateOrThrow(ConfigModels cfg)
+        {
+            if (cfg == null)
+                throw new InvalidOperationException("Config is null.");
+
+            if (cfg.Sites == null || cfg.Sites.Count == 0)
+                throw new InvalidOperationException("Config must contain at least one <Site>.");
+
+            foreach (var site in cfg.Sites)
+            {
+                if (string.IsNullOrWhiteSpace(site.Site))
+                    throw new InvalidOperationException("Site name is missing.");
+
+                // at least one SSH?
+                if (site.SshServers == null || site.SshServers.Count == 0)
+                    throw new InvalidOperationException($"Site {site.Site}: requires at least one SSH server.");
+
+                foreach (var ssh in site.SshServers)
+                {
+                    if (string.IsNullOrWhiteSpace(ssh.Name))
+                        throw new InvalidOperationException($"Site {site.Site}: SSH server missing Name.");
+
+                    if (string.IsNullOrWhiteSpace(ssh.Hostname))
+                        throw new InvalidOperationException($"Site {site.Site}: SSH {ssh.Name} has empty Hostname.");
+
+                    if (ssh.Port <= 0 || ssh.Port > 65535)
+                        throw new InvalidOperationException($"Site {site.Site}: SSH {ssh.Name} has invalid Port {ssh.Port}.");
+                }
+
+                // SQL connections optional? up to you.
+                // If you want at least one, enforce here:
+                if (site.SqlConnections == null || site.SqlConnections.Count == 0)
+                    throw new InvalidOperationException($"Site {site.Site}: requires at least one SQL connection.");
+
+                foreach (var sql in site.SqlConnections)
+                {
+                    if (string.IsNullOrWhiteSpace(sql.ConnectionName))
+                        throw new InvalidOperationException($"Site {site.Site}: a SQL connection is missing ConnectionName.");
+
+                    if (string.IsNullOrWhiteSpace(sql.TNS))
+                        throw new InvalidOperationException($"Site {site.Site}: SQL {sql.ConnectionName} missing TNS.");
+
+                    if (string.IsNullOrWhiteSpace(sql.Username))
+                        throw new InvalidOperationException($"Site {site.Site}: SQL {sql.ConnectionName} missing Username.");
+
+                    // Password can be empty if using wallet / OS auth. So we don't force it.
+                }
+            }
+        }
+    }
+}
 
